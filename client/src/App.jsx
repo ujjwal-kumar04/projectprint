@@ -4,6 +4,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import AdminDashboard from './pages/admin/AdminDashboard';
 import UploadPage from './pages/customer/UploadPage';
+import PhotoEditorPage from './pages/shopkeeper/PhotoEditorPage';
 import ShopkeeperDashboard from './pages/shopkeeper/ShopkeeperDashboard';
 
 function ProtectedRoute({ children, role }) {
@@ -43,6 +44,14 @@ export default function App() {
             element={
               <ProtectedRoute role="shopkeeper">
                 <ShopkeeperDashboard />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/editor"
+            element={
+              <ProtectedRoute role="shopkeeper">
+                <PhotoEditorPage />
               </ProtectedRoute>
             }
           />

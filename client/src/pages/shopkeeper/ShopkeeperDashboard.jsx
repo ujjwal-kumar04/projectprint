@@ -9,7 +9,7 @@ import PassportEditor from '../../components/PassportEditor';
 import { useAuth } from '../../context/AuthContext';
 
 // ── Upload Row (table row) ────────────────────────────────────────
-function UploadRow({ index, upload, onSelect, onDelete, onPrint, serverBase }) {
+function UploadRow({ index, upload, onEdit, onSelect, onDelete, onPrint, serverBase }) {
   const isImage = upload.fileType === 'image';
   const src     = `${serverBase}/${upload.filePath}`;
 
@@ -60,9 +60,9 @@ function UploadRow({ index, upload, onSelect, onDelete, onPrint, serverBase }) {
       <td className="px-4 py-2 no-print">
         <div className="flex items-center gap-1.5 flex-wrap">
           {isImage && (
-            <button onClick={() => onSelect(upload)}
+            <button onClick={() => onEdit(src, upload.customerName)}
               className="text-xs px-2 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 font-medium transition">
-              🖼 Edit
+              ✏️ Edit
             </button>
           )}
           <a href={src} target="_blank" rel="noreferrer"
@@ -153,6 +153,10 @@ export default function ShopkeeperDashboard() {
     });
     return () => socket.disconnect();
   }, [user?.shopId]);
+
+  const handleEdit = (src, name) => {
+    navigate('/editor', { state: { src, name } });
+  };
 
   const handleDelete = async (id) => {
     if (!window.confirm('Delete this upload?')) return;
@@ -343,6 +347,7 @@ export default function ShopkeeperDashboard() {
                             index={i + 1}
                             upload={upload}
                             serverBase={SERVER_BASE}
+                            onEdit={handleEdit}
                             onSelect={setSelectedUpload}
                             onDelete={handleDelete}
                             onPrint={handlePrintRow}

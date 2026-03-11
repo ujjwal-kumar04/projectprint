@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
+import ImageEditor from 'tui-image-editor';
+import 'tui-image-editor/dist/tui-image-editor.css';
 
 // ── Passport photo constants (300 DPI)  ────────────────────────────────────────
 // 3.5cm × 4.5cm at 300dpi = (3.5/2.54*300) × (4.5/2.54*300) = 413 × 531 px
@@ -51,9 +53,57 @@ function canvasToObjectURL(canvas, type = 'image/jpeg', quality = 0.95) {
   return new Promise((resolve) => canvas.toBlob((b) => resolve(URL.createObjectURL(b)), type, quality));
 }
 
+// ── TUI Photo Editor Tab ──────────────────────────────────────
+function TuiEditorTab({ imageUrl }) {
+  const containerRef = useRef(null);
+  const editorRef    = useRef(null);
+
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const editor = new ImageEditor(containerRef.current, {
+      includeUI: {
+        loadImage: { path: imageUrl, name: 'Photo' },
+        menu: ['crop', 'flip', 'rotate', 'draw', 'shape', 'text', 'filter'],
+        initMenu: 'filter',
+        uiSize: { width: '100%', height: '560px' },
+        menuBarPosition: 'bottom',
+      },
+      cssMaxWidth: 700,
+      cssMaxHeight: 500,
+      usageStatistics: false,
+    });
+    editorRef.current = editor;
+    return () => { try { editor.destroy(); } catch { /* already destroyed */ } };
+  }, [imageUrl]);
+
+  const handleDownload = () => {
+    if (!editorRef.current) return;
+    const dataUrl = editorRef.current.toDataURL();
+    const a = document.createElement('a');
+    a.href     = dataUrl;
+    a.download = 'edited-photo.png';
+    a.click();
+    toast.success('Photo downloaded!');
+  };
+
+  return (
+    <div className="space-y-3">
+      <div ref={containerRef} />
+      <div className="flex justify-end pt-1">
+        <button
+          onClick={handleDownload}
+          className="btn-primary text-sm px-5">
+          ⬇ Download Edited Photo
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 export default function PassportEditor({ upload, serverBase, onClose }) {
   const imageUrl = `${serverBase}/${upload.filePath}`;
+  const [activeTab, setActiveTab] = useState('passport'); // 'passport' | 'editor'
 
   const [step, setStep]               = useState('original'); // original | removing | preview | grid
   const [bgColor, setBgColor]         = useState('#ffffff');
@@ -179,13 +229,34 @@ export default function PassportEditor({ upload, serverBase, onClose }) {
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b">
           <div>
-            <h2 className="text-lg font-semibold text-gray-900">Passport Photo Editor</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Photo Editor</h2>
             <p className="text-sm text-gray-400 mt-0.5">Customer: {upload.customerName}</p>
           </div>
           <button onClick={onClose} className="w-8 h-8 rounded-full flex items-center justify-center text-gray-400 hover:bg-gray-100 hover:text-gray-600 text-xl">&times;</button>
         </div>
 
+        {/* Tabs */}
+        <div className="flex border-b px-5">
+          {[{ key: 'passport', label: '🪪 Passport Grid' }, { key: 'editor', label: '✏️ Photo Editor' }].map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setActiveTab(t.key)}
+              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+                activeTab === t.key
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-500 hover:text-gray-700'
+              }`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+
         <div className="p-6 space-y-6">
+          {/* TUI editor tab */}
+          {activeTab === 'editor' && <TuiEditorTab imageUrl={imageUrl} />}
+
+          {/* Passport grid tab */}
+          {activeTab === 'passport' && (<>
           {/* Step 1 — Original + Remove BG */}
           {(step === 'original' || step === 'removing') && (
             <div className="flex flex-col sm:flex-row gap-6 items-start">
@@ -346,6 +417,7 @@ export default function PassportEditor({ upload, serverBase, onClose }) {
               </p>
             </div>
           )}
+          </>)}
         </div>
       </div>
     </div>
