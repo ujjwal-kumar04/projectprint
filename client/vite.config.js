@@ -10,6 +10,21 @@ export default defineConfig({
       '/uploads': { target: 'http://localhost:5000', changeOrigin: true }
     }
   },
+  build: {
+    outDir: 'dist',
+    sourcemap: false,          // disable sourcemaps in production
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        // Split large third-party libs into separate cached chunks
+        manualChunks: {
+          vendor:  ['react', 'react-dom', 'react-router-dom'],
+          pdf:     ['jspdf', 'html2canvas'],
+          socket:  ['socket.io-client'],
+        },
+      },
+    },
+  },
   optimizeDeps: {
     // background-removal uses WASM — exclude from pre-bundling
     exclude: ['@imgly/background-removal']
