@@ -7,6 +7,16 @@
     @apply bg-gray-50 text-gray-900 font-sans;
   }
 }
+.input{
+border:1px solid #d1d5db;
+padding:6px 8px;
+border-radius:6px;
+outline:none;
+}
+
+.input:focus{
+border-color:#2563eb;
+}
 
 @layer components {
   .btn-primary {
