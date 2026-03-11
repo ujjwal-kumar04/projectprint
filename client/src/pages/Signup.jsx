@@ -12,9 +12,14 @@ export default function Signup() {
     name:           '',
     shopName:       '',
     emailOrPhone:   '',
+    email:          '',   // shown only when phone is entered
     password:       '',
     confirmPassword:'',
   });
+
+  // True when user has typed something that looks like a phone number (not an email)
+  const isPhoneEntry = form.emailOrPhone.trim().length > 0 &&
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.emailOrPhone.trim());
   const [showPass,    setShowPass]    = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [busy,        setBusy]        = useState(false);
@@ -46,13 +51,17 @@ export default function Signup() {
 
     setBusy(true);
     try {
-      const { data } = await api.post('/auth/signup', {
-        name:         form.name.trim(),
-        shopName:     form.shopName.trim(),
-        emailOrPhone: form.emailOrPhone.trim(),
-        password:     form.password,
+      const payload = {
+        name:            form.name.trim(),
+        shopName:        form.shopName.trim(),
+        emailOrPhone:    form.emailOrPhone.trim(),
+        password:        form.password,
         confirmPassword: form.confirmPassword,
-      });
+      };
+      // When the user signed up with a phone number, also send the optional email
+      if (isPhoneEntry && form.email.trim()) payload.email = form.email.trim();
+
+      const { data } = await api.post('/auth/signup', payload);
 
       // Store token + user the same way login does
       localStorage.setItem('token', data.token);
@@ -139,6 +148,27 @@ export default function Signup() {
                 You'll use this to log in.
               </p>
             </div>
+
+            {/* Optional email — shown only when phone number is entered */}
+            {isPhoneEntry && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Email Address
+                  <span className="ml-1 font-normal text-gray-400">(optional — for notifications)</span>
+                </label>
+                <input
+                  type="email"
+                  className="input"
+                  placeholder="you@email.com"
+                  value={form.email}
+                  onChange={set('email')}
+                  autoComplete="email"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Add your email so we can send you updates via EmailJS.
+                </p>
+              </div>
+            )}
 
             {/* Password */}
             <div>

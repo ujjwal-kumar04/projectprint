@@ -14,7 +14,7 @@ const isEmail = (str) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(str);
 // Self-registration for shopkeepers
 router.post('/signup', async (req, res) => {
   try {
-    let { name, shopName, emailOrPhone, password, confirmPassword } = req.body;
+    let { name, shopName, emailOrPhone, email: extraEmail, password, confirmPassword } = req.body;
 
     // ── Validation ────────────────────────────────────────────────
     if (!name?.trim())
@@ -47,7 +47,18 @@ router.post('/signup', async (req, res) => {
       isActive: true,
     };
     if (useEmail) userData.email = emailOrPhone;
-    else          userData.phone = emailOrPhone;
+    else {
+      userData.phone = emailOrPhone;
+      // If the user also provided an email address (optional when phone is primary)
+      if (extraEmail?.trim()) {
+        const cleanEmail = extraEmail.trim();
+        if (!isEmail(cleanEmail))
+          return res.status(400).json({ message: 'Please enter a valid email address' });
+        if (await User.findOne({ email: cleanEmail }))
+          return res.status(400).json({ message: 'That email is already registered' });
+        userData.email = cleanEmail;
+      }
+    }
 
     const user = await User.create(userData);
 
