@@ -407,10 +407,10 @@
 // }
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import toast from "react-hot-toast";
 import { useLocation, useNavigate } from "react-router-dom";
 import ImageEditor from "tui-image-editor";
 import "tui-image-editor/dist/tui-image-editor.css";
-import toast from "react-hot-toast";
 
 const DPI = 300;
 
@@ -440,11 +440,11 @@ function StepEditor({ src, name, onNext }) {
   const editor = useRef(null);
 
   useEffect(() => {
-    if (!src) return;
+    if (!src || !ref.current) return;
 
     const instance = new ImageEditor(ref.current, {
       includeUI: {
-        loadImage: { path: src, name: name || "photo" },
+        // Do NOT pass loadImage here — use loadImageFromURL below for reliable loading
         menu: ["crop", "flip", "rotate", "draw", "shape", "text", "filter"],
         initMenu: "filter",
         menuBarPosition: "bottom",
@@ -460,10 +460,25 @@ function StepEditor({ src, name, onNext }) {
 
     editor.current = instance;
 
-    return () => instance.destroy();
+    // Build absolute URL so TUI can fetch it regardless of base path
+    const absoluteSrc = src.startsWith("http")
+      ? src
+      : `${window.location.origin}${src.startsWith("/") ? src : `/${src}`}`;
+
+    // loadImageFromURL is TUI's reliable programmatic API
+    instance
+      .loadImageFromURL(absoluteSrc, name || "photo")
+      .catch(() => toast.error("Image load failed — check file path"));
+
+    return () => {
+      try {
+        instance.destroy();
+      } catch { /* ok */ }
+    };
   }, [src, name]);
 
   const handleNext = () => {
+    if (!editor.current) return;
     const data = editor.current.toDataURL();
     onNext(data);
   };
@@ -488,244 +503,385 @@ function StepEditor({ src, name, onNext }) {
 
 /* ---------------- GRID BUILDER ---------------- */
 
+const ALL_PRESETS = [
+  { label: "Passport 3.5×4.5", w: 35, h: 45 },
+  { label: "Visa 4×5",         w: 40, h: 50 },
+  { label: "ID Card 3×4",      w: 30, h: 40 },
+  { label: "Stamp 2.5×3",      w: 25, h: 30 },
+  { label: "2×2 inch",         w: 51, h: 51 },
+  { label: "3.5×3.5 cm",       w: 35, h: 35 },
+  { label: "Custom",           w: 0,  h: 0  },
+];
+
 function StepGrid({ editedDataUrl, name, onBack }) {
+  const [photoUrl,  setPhotoUrl]  = useState(editedDataUrl);
+  const [removing,  setRemoving]  = useState(false);
+  const [printing,  setPrinting]  = useState(false);
+
   const [presetIdx, setPresetIdx] = useState(0);
-
-  const [widthMm, setWidthMm] = useState(35);
-  const [heightMm, setHeightMm] = useState(45);
-
-  const [cols, setCols] = useState(6);
-  const [rows, setRows] = useState(2);
-
-  const [gap, setGap] = useState(4);
-
-  const [bgColor, setBgColor] = useState("#ffffff");
+  const [widthMm,   setWidthMm]   = useState(35);
+  const [heightMm,  setHeightMm]  = useState(45);
+  const [cols,      setCols]      = useState(6);
+  const [rows,      setRows]      = useState(2);
+  const [gap,       setGap]       = useState(4);
+  const [bgColor,   setBgColor]   = useState("#ffffff");
+  const [scaleX,    setScaleX]    = useState(100); // horizontal scale %
+  const [scaleY,    setScaleY]    = useState(100); // vertical scale %
 
   const previewRef = useRef(null);
+  const mainRef    = useRef(null);
 
-  const pxW = mmToPx(widthMm);
-  const pxH = mmToPx(heightMm);
+  const pxW   = mmToPx(widthMm);
+  const pxH   = mmToPx(heightMm);
   const pxGap = mmToPx(gap);
 
   const applyPreset = (i) => {
     setPresetIdx(i);
-
-    if (PRESETS[i].w) {
-      setWidthMm(PRESETS[i].w);
-      setHeightMm(PRESETS[i].h);
+    if (ALL_PRESETS[i].w) {
+      setWidthMm(ALL_PRESETS[i].w);
+      setHeightMm(ALL_PRESETS[i].h);
     }
   };
 
+  // ── Remove background via local rembg Python API ────────────────
+  const handleRemoveBg = async () => {
+    setRemoving(true);
+    try {
+      const res = await fetch("/api/rembg", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageBase64: photoUrl }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error || `HTTP ${res.status}`);
+      }
+      const { imageBase64 } = await res.json();
+      setPhotoUrl(imageBase64);
+      toast.success("Background removed!");
+    } catch (e) {
+      toast.error(`Remove BG failed: ${e.message}`);
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  // ── Build high-res canvas at 300 DPI (with H/V scale) ───────────
   const buildCanvas = useCallback(async () => {
-    const img = await loadImage(editedDataUrl);
-
-    const totalW = cols * pxW + (cols + 1) * pxGap;
-    const totalH = rows * pxH + (rows + 1) * pxGap;
-
+    const img    = await loadImage(photoUrl);
+    const spxW   = Math.round(pxW * scaleX / 100);
+    const spxH   = Math.round(pxH * scaleY / 100);
+    const totalW = cols * spxW  + (cols + 1) * pxGap;
+    const totalH = rows * spxH  + (rows + 1) * pxGap;
     const canvas = document.createElement("canvas");
-
-    canvas.width = totalW;
+    canvas.width  = totalW;
     canvas.height = totalH;
-
     const ctx = canvas.getContext("2d");
-
     ctx.fillStyle = bgColor;
     ctx.fillRect(0, 0, totalW, totalH);
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const x = pxGap + c * (pxW + pxGap);
-        const y = pxGap + r * (pxH + pxGap);
-
-        ctx.drawImage(img, x, y, pxW, pxH);
-      }
-    }
-
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++)
+        ctx.drawImage(img, pxGap + c * (spxW + pxGap), pxGap + r * (spxH + pxGap), spxW, spxH);
     return canvas;
-  }, [editedDataUrl, cols, rows, pxW, pxH, pxGap, bgColor]);
+  }, [photoUrl, cols, rows, pxW, pxH, pxGap, bgColor, scaleX, scaleY]);
 
+  // ── Draw preview scaled to fit the main area (1 screen) ─────────
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const canvas = await buildCanvas();
-
-      const preview = previewRef.current;
-
-      const MAX = 600;
-
-      const scale = Math.min(MAX / canvas.width, MAX / canvas.height);
-
-      preview.width = canvas.width * scale;
-      preview.height = canvas.height * scale;
-
-      const ctx = preview.getContext("2d");
-
-      ctx.drawImage(canvas, 0, 0, preview.width, preview.height);
+      try {
+        const canvas = await buildCanvas();
+        if (cancelled || !previewRef.current || !mainRef.current) return;
+        const { clientWidth: cw, clientHeight: ch } = mainRef.current;
+        const maxW  = cw - 48;
+        const maxH  = ch - 48;
+        const scale = Math.min(maxW / canvas.width, maxH / canvas.height, 1);
+        const el    = previewRef.current;
+        el.width    = Math.round(canvas.width  * scale);
+        el.height   = Math.round(canvas.height * scale);
+        el.getContext("2d").drawImage(canvas, 0, 0, el.width, el.height);
+      } catch { /* ok */ }
     })();
+    return () => { cancelled = true; };
   }, [buildCanvas]);
 
-  const downloadJPG = async () => {
+  // ── Download JPG ─────────────────────────────────────────────────
+  const handleDownload = async () => {
     const canvas = await buildCanvas();
-
-    const link = document.createElement("a");
-
-    link.href = canvas.toDataURL("image/jpeg");
-
-    link.download = "passport-grid.jpg";
-
+    const link   = document.createElement("a");
+    link.href     = canvas.toDataURL("image/jpeg", 0.95);
+    link.download = `photos-${name || "grid"}.jpg`;
     link.click();
-
-    toast.success("Downloaded");
+    toast.success("Downloaded!");
   };
 
-  const downloadPDF = async () => {
-    const { jsPDF } = await import("jspdf");
-
-    const canvas = await buildCanvas();
-
-    const img = canvas.toDataURL("image/jpeg");
-
-    const pdf = new jsPDF();
-
-    pdf.addImage(img, "JPEG", 10, 10, 190, 0);
-
-    pdf.save("passport-photo.pdf");
-  };
-
+  // ── Print (only photo, no browser chrome / scale marks) ──────────
   const handlePrint = async () => {
-    const canvas = await buildCanvas();
-
-    const data = canvas.toDataURL("image/jpeg");
-
-    const win = window.open("");
-
-    win.document.write(`
-<html>
-<body style="margin:0">
-<img src="${data}" style="width:100%" onload="window.print()"/>
-</body>
-</html>
-`);
+    setPrinting(true);
+    try {
+      const canvas = await buildCanvas();
+      const data   = canvas.toDataURL("image/jpeg", 0.95);
+      const win    = window.open("", "_blank");
+      if (!win) { toast.error("Allow pop-ups to print"); return; }
+      win.document.write(
+        `<!DOCTYPE html><html><head><title>Print</title><style>` +
+        `*{margin:0;padding:0;box-sizing:border-box}` +
+        `html,body{width:100%;height:100%;background:#fff}` +
+        `img{display:block;width:100%;height:auto}` +
+        `@media print{` +
+        `  @page{size:auto;margin:0mm}` +
+        `  html,body{margin:0;padding:0}` +
+        `  img{width:100%;height:auto}` +
+        `}` +
+        `</style></head><body>` +
+        `<img src="${data}" onload="setTimeout(function(){window.focus();window.print();window.close();},300)"/>` +
+        `</body></html>`
+      );
+      win.document.close();
+    } finally {
+      setPrinting(false);
+    }
   };
 
   return (
-    <div className="flex h-screen">
+    <div className="flex flex-col h-screen bg-gray-100 overflow-hidden">
 
-      <div className="w-72 bg-white border-r p-4 space-y-4">
-
-        <button onClick={onBack} className="text-sm">
+      {/* ── TOP HEADER with Print & Download ── */}
+      <header className="bg-slate-800 px-4 py-2 flex items-center justify-between shrink-0 shadow-md z-10">
+        <button
+          onClick={onBack}
+          className="text-white/70 hover:text-white text-sm transition"
+        >
           ← Back
         </button>
-
-        <div>
-          <p className="text-xs mb-2">Photo Size</p>
-
-          {PRESETS.map((p, i) => (
-            <button
-              key={i}
-              onClick={() => applyPreset(i)}
-              className="block w-full text-left border p-2 mb-1"
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        <div>
-          <p className="text-xs">Width</p>
-
-          <input
-            className="input w-full"
-            value={widthMm}
-            onChange={(e) => setWidthMm(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <p className="text-xs">Height</p>
-
-          <input
-            className="input w-full"
-            value={heightMm}
-            onChange={(e) => setHeightMm(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <p className="text-xs">Columns</p>
-
-          <input
-            type="range"
-            min="1"
-            max="10"
-            value={cols}
-            onChange={(e) => setCols(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <p className="text-xs">Rows</p>
-
-          <input
-            type="range"
-            min="1"
-            max="10"
-            value={rows}
-            onChange={(e) => setRows(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <p className="text-xs">Gap (mm)</p>
-
-          <input
-            type="range"
-            min="0"
-            max="20"
-            value={gap}
-            onChange={(e) => setGap(e.target.value)}
-          />
-        </div>
-
-        <div>
-          <p className="text-xs">Background</p>
-
-          <input
-            type="color"
-            value={bgColor}
-            onChange={(e) => setBgColor(e.target.value)}
-          />
-        </div>
-
-        <div className="space-y-2">
-
+        <span className="text-white font-semibold text-sm">🖨️ Print Layout</span>
+        <div className="flex gap-2">
           <button
-            onClick={downloadJPG}
-            className="w-full bg-blue-600 text-white p-2 rounded"
+            onClick={handleDownload}
+            className="bg-blue-600 hover:bg-blue-700 active:scale-95 text-white text-xs font-bold px-4 py-1.5 rounded-lg transition"
           >
-            Download JPG
+            ⬇ Download JPG
           </button>
-
-          <button
-            onClick={downloadPDF}
-            className="w-full bg-indigo-600 text-white p-2 rounded"
-          >
-            Download PDF
-          </button>
-
           <button
             onClick={handlePrint}
-            className="w-full bg-green-600 text-white p-2 rounded"
+            disabled={printing}
+            className="bg-green-600 hover:bg-green-700 active:scale-95 disabled:opacity-60 text-white text-xs font-bold px-4 py-1.5 rounded-lg transition"
           >
-            Print
+            {printing ? "…" : "🖨️ Print"}
+          </button>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden">
+
+        {/* ── LEFT SIDEBAR ── */}
+        <aside className="w-64 bg-white border-r p-3 overflow-y-auto shrink-0 space-y-4">
+
+          {/* Remove Background */}
+          <button
+            onClick={handleRemoveBg}
+            disabled={removing}
+            className="w-full bg-purple-600 hover:bg-purple-700 active:scale-95 disabled:opacity-60 text-white text-sm font-bold py-2 rounded-lg flex items-center justify-center gap-2 transition"
+          >
+            {removing ? (
+              <>
+                <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin inline-block" />
+                Removing…
+              </>
+            ) : "✂️ Remove Background"}
           </button>
 
-        </div>
-      </div>
+          {/* Size Presets */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+              Photo Size
+            </p>
+            <div className="grid grid-cols-2 gap-1">
+              {ALL_PRESETS.map((p, i) => (
+                <button
+                  key={i}
+                  onClick={() => applyPreset(i)}
+                  className={`text-xs px-2 py-1.5 rounded-lg border transition ${
+                    presetIdx === i
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-white text-gray-700 border-gray-200 hover:border-blue-400"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
-      <div className="flex-1 flex items-center justify-center bg-gray-100">
+          {/* Custom Width / Height */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+              Custom Size (mm)
+            </p>
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <label className="text-xs text-gray-500">Width</label>
+                <input
+                  type="number" min="5" max="300" value={widthMm}
+                  onChange={(e) => { setWidthMm(+e.target.value); setPresetIdx(ALL_PRESETS.length - 1); }}
+                  className="border rounded px-2 py-1 text-sm w-full mt-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                />
+              </div>
+              <div className="flex-1">
+                <label className="text-xs text-gray-500">Height</label>
+                <input
+                  type="number" min="5" max="300" value={heightMm}
+                  onChange={(e) => { setHeightMm(+e.target.value); setPresetIdx(ALL_PRESETS.length - 1); }}
+                  className="border rounded px-2 py-1 text-sm w-full mt-1 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                />
+              </div>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">{pxW} × {pxH} px @ 300 DPI</p>
+          </div>
 
-        <canvas ref={previewRef} className="shadow-xl"></canvas>
+          {/* Columns */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+              Columns: <span className="text-blue-600 font-bold">{cols}</span>
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCols((c) => Math.max(1, c - 1))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >−</button>
+              <input
+                type="range" min="1" max="10" value={cols}
+                onChange={(e) => setCols(+e.target.value)}
+                className="flex-1"
+              />
+              <button
+                onClick={() => setCols((c) => Math.min(10, c + 1))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >+</button>
+            </div>
+          </div>
 
+          {/* Rows */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+              Rows: <span className="text-blue-600 font-bold">{rows}</span>
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setRows((r) => Math.max(1, r - 1))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >−</button>
+              <input
+                type="range" min="1" max="10" value={rows}
+                onChange={(e) => setRows(+e.target.value)}
+                className="flex-1"
+              />
+              <button
+                onClick={() => setRows((r) => Math.min(10, r + 1))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >+</button>
+            </div>
+          </div>
+
+          {/* Gap */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+              Gap: <span className="text-blue-600 font-bold">{gap} mm</span>
+            </p>
+            <input
+              type="range" min="0" max="20" value={gap}
+              onChange={(e) => setGap(+e.target.value)}
+              className="w-full"
+            />
+          </div>
+
+          {/* Horizontal Scale */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+              Horizontal Scale: <span className="text-blue-600 font-bold">{scaleX}%</span>
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setScaleX((v) => Math.max(10, v - 5))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >−</button>
+              <input
+                type="range" min="10" max="200" value={scaleX}
+                onChange={(e) => setScaleX(+e.target.value)}
+                className="flex-1"
+              />
+              <button
+                onClick={() => setScaleX((v) => Math.min(200, v + 5))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >+</button>
+            </div>
+          </div>
+
+          {/* Vertical Scale */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">
+              Vertical Scale: <span className="text-blue-600 font-bold">{scaleY}%</span>
+            </p>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setScaleY((v) => Math.max(10, v - 5))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >−</button>
+              <input
+                type="range" min="10" max="200" value={scaleY}
+                onChange={(e) => setScaleY(+e.target.value)}
+                className="flex-1"
+              />
+              <button
+                onClick={() => setScaleY((v) => Math.min(200, v + 5))}
+                className="w-7 h-7 rounded bg-gray-100 hover:bg-gray-200 font-bold text-base leading-none"
+              >+</button>
+            </div>
+          </div>
+
+          {/* Background color */}
+          <div>
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+              Background
+            </p>
+            <div className="flex gap-2 flex-wrap mb-2">
+              {["#ffffff","#87ceeb","#003580","#f0f0f0","#d4edda","#fff3cd"].map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setBgColor(c)}
+                  style={{ background: c }}
+                  className={`w-7 h-7 rounded-full border-2 transition-transform ${
+                    bgColor === c ? "border-blue-500 scale-125" : "border-gray-300"
+                  }`}
+                />
+              ))}
+            </div>
+            <input
+              type="color" value={bgColor}
+              onChange={(e) => setBgColor(e.target.value)}
+              className="w-full h-9 rounded cursor-pointer border border-gray-200"
+            />
+          </div>
+
+          {/* Summary */}
+          <div className="bg-blue-50 rounded-xl p-3 text-xs text-blue-700 space-y-0.5">
+            <p>📐 {widthMm}×{heightMm} mm per photo</p>
+            <p>↔ Scale: {scaleX}% H × {scaleY}% V</p>
+            <p>🔢 {cols} cols × {rows} rows = {cols * rows} photos</p>
+            <p>📏 Gap: {gap} mm</p>
+          </div>
+        </aside>
+
+        {/* ── PREVIEW — scales to fit one screen ── */}
+        <main
+          ref={mainRef}
+          className="flex-1 overflow-hidden flex items-center justify-center bg-gray-100 p-6"
+        >
+          <canvas
+            ref={previewRef}
+            className="shadow-2xl rounded border border-gray-300 max-w-full max-h-full"
+          />
+        </main>
       </div>
     </div>
   );
@@ -734,14 +890,12 @@ function StepGrid({ editedDataUrl, name, onBack }) {
 /* ---------------- MAIN PAGE ---------------- */
 
 export default function PhotoEditorPage() {
-
   const location = useLocation();
   const navigate = useNavigate();
 
   const { src, name } = location.state || {};
 
-  const [step, setStep] = useState("edit");
-
+  const [step,   setStep]   = useState("edit");
   const [edited, setEdited] = useState(null);
 
   if (!src)
