@@ -543,22 +543,38 @@ function StepGrid({ editedDataUrl, name, onBack }) {
     }
   };
 
-  // ── Remove background via local rembg Python API ────────────────
+  // ── Remove background via remove.bg API ────────────────────────
   const handleRemoveBg = async () => {
     setRemoving(true);
     try {
-      const res = await fetch("/api/rembg", {
+      // Convert data URL to Blob for multipart upload
+      const res0 = await fetch(photoUrl);
+      const blob = await res0.blob();
+
+      const fd = new FormData();
+      fd.append("image_file", blob, "photo.png");
+      fd.append("size", "auto");
+
+      const res = await fetch("https://api.remove.bg/v1.0/removebg", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageBase64: photoUrl }),
+        headers: { "X-Api-Key": "sRymdbz5Ft6CAnYLL781UHiF" },
+        body: fd,
       });
+
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error || `HTTP ${res.status}`);
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(
+          errJson?.errors?.[0]?.title || `HTTP ${res.status}`
+        );
       }
-      const { imageBase64 } = await res.json();
-      setPhotoUrl(imageBase64);
-      toast.success("Background removed!");
+
+      const outBlob = await res.blob();
+      const reader  = new FileReader();
+      reader.onload = (e) => {
+        setPhotoUrl(e.target.result);
+        toast.success("Background removed!");
+      };
+      reader.readAsDataURL(outBlob);
     } catch (e) {
       toast.error(`Remove BG failed: ${e.message}`);
     } finally {
